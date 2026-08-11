@@ -1,0 +1,11 @@
+node_modules/
+.env
+dist/
+web/dist/
+*.log
+egress.cert
+egress.key
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+.DS_Store

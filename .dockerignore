@@ -1,0 +1,13 @@
+.env
+.git
+.DS_Store
+**/.DS_Store
+**/dist
+**/node_modules
+**/*.log
+**/*.cert
+**/*.key
+**/*.sqlite
+**/*.sqlite-shm
+**/*.sqlite-wal
+docs

@@ -1,0 +1,26 @@
+name: egress
+
+services:
+  egress:
+    build:
+      context: .
+      args:
+        VITE_PUBLIC_URL: https://egress.co.za
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 8787
+      EGRESS_DB_PATH: /data/egress.sqlite
+      PUBLIC_HOST: egress.co.za
+    volumes:
+      - egress_data:/data
+    networks:
+      - edge
+
+networks:
+  edge:
+    external: true
+    name: edge
+
+volumes:
+  egress_data:

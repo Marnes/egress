@@ -1,0 +1,152 @@
+name: Deploy
+
+# Ships main to production (egress.co.za). The image is built here on GitHub's
+# runners and pulled by the server, so the bundler never runs on the VPS --
+# that box has ~3.8GB RAM shared with several other production stacks.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Never let two deploys race for the same container.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: ghcr.io/marnes/egress
+
+jobs:
+  # Reuses ci.yml so a deploy can never ship code that fails the suite,
+  # including manual workflow_dispatch runs.
+  verify:
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: Build and push image
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # A commit-pinned tag so the deploy step ships an exact, known image
+      # rather than whatever `latest` happens to point at mid-run.
+      - id: meta
+        run: echo "tag=sha-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }}
+            ${{ env.IMAGE_NAME }}:latest
+          build-args: |
+            VITE_PUBLIC_URL=https://egress.co.za
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy to VPS
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      # Under this scheme the server needs no source checkout -- the compose
+      # file is the only thing it wants from the repo, so we ship it each time.
+      - name: Upload compose file
+        run: |
+          scp -i ~/.ssh/id_ed25519 docker-compose.prod.yml \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/opt/egress/docker-compose.prod.yml"
+
+      - name: Pull and restart
+        run: |
+          # Secrets go over stdin (heredoc), never on the remote command line,
+          # so they can't be read out of `ps` on a shared box.
+          ssh -i ~/.ssh/id_ed25519 \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" 'bash -s' <<'EOF'
+          set -euo pipefail
+
+          cd /opt/egress
+
+          # Works whether or not the GHCR package is public.
+          printf '%s' '${{ secrets.GITHUB_TOKEN }}' \
+            | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+
+          export EGRESS_IMAGE_TAG='${{ needs.build.outputs.tag }}'
+
+          # -p egress keeps the existing project name, which is what binds the
+          # container to the egress_egress_data volume holding the SQLite DB.
+          docker compose -p egress -f docker-compose.prod.yml pull
+          docker compose -p egress -f docker-compose.prod.yml up -d --remove-orphans
+
+          docker logout ghcr.io
+          EOF
+
+      - name: Verify health
+        run: |
+          ssh -i ~/.ssh/id_ed25519 \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" 'bash -s' <<'EOF'
+          set -euo pipefail
+
+          # Compose reports healthy off the Dockerfile HEALTHCHECK; give it a
+          # window to go green before calling the deploy good.
+          for i in $(seq 1 30); do
+            status="$(docker inspect --format '{{.State.Health.Status}}' egress-egress-1 2>/dev/null || echo missing)"
+            echo "attempt $i: $status"
+            if [ "$status" = "healthy" ]; then
+              echo "Deploy healthy."
+              exit 0
+            fi
+            sleep 5
+          done
+
+          echo "Container did not become healthy in time. Recent logs:"
+          docker logs --tail 50 egress-egress-1 || true
+          exit 1
+          EOF
+
+      - name: Prune superseded egress images
+        # Only ever touches this project's own images -- other stacks on the
+        # box (isitadeal, hyranx, opensite, infra) must not be affected.
+        if: always()
+        run: |
+          ssh -i ~/.ssh/id_ed25519 \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" 'bash -s' <<'EOF'
+          set -euo pipefail
+          # --no-trunc so the ID format matches .Image ("sha256:..."), otherwise
+          # the comparison never hits and we'd try to remove the live image.
+          keep="$(docker inspect --format '{{.Image}}' egress-egress-1 2>/dev/null || true)"
+          docker images --no-trunc --format '{{.ID}} {{.Repository}}:{{.Tag}}' \
+            | awk '$2 ~ /^ghcr\.io\/marnes\/egress:/ {print $1" "$2}' \
+            | while read -r id ref; do
+                [ "$id" = "$keep" ] && continue
+                docker rmi "$ref" >/dev/null 2>&1 || true
+              done
+          echo "Pruned old egress images (other projects untouched)."
+          EOF

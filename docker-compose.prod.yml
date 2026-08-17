@@ -1,0 +1,34 @@
+# Production compose for the VPS. Unlike docker-compose.yml (which builds from
+# source for local use), this pulls a prebuilt image from GHCR -- the server has
+# ~3.8GB RAM shared with several other stacks and should not run the bundler.
+#
+# Deployed automatically by .github/workflows/deploy.yml. See DEPLOY.md.
+name: egress
+
+services:
+  egress:
+    # EGRESS_IMAGE_TAG is set by the deploy workflow to a commit-pinned tag so a
+    # rollback is just re-running with an older tag.
+    image: ghcr.io/marnes/egress:${EGRESS_IMAGE_TAG:-latest}
+    container_name: egress-egress-1
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 8787
+      EGRESS_DB_PATH: /data/egress.sqlite
+      PUBLIC_HOST: egress.co.za
+    volumes:
+      # Holds the SQLite DB. The volume resolves to egress_egress_data only as
+      # long as the project name above stays "egress" -- do not rename it.
+      - egress_data:/data
+    networks:
+      - edge
+
+networks:
+  # Shared with infra-caddy-1, which terminates TLS and proxies to egress:8787.
+  edge:
+    external: true
+    name: edge
+
+volumes:
+  egress_data:

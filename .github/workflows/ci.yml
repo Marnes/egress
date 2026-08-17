@@ -1,0 +1,32 @@
+name: CI
+
+# Runs on every PR, and is called by deploy.yml before it ships anything.
+# It deliberately does NOT run on push to main: deploy.yml calls it there, so
+# main gets verified exactly once per push instead of twice.
+on:
+  pull_request:
+  workflow_call:
+
+jobs:
+  verify:
+    name: Lint, typecheck, test, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Match the Dockerfile's node:22-bookworm-slim base.
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run lint
+
+      - run: npm run typecheck
+
+      - run: npm test
+
+      # Catches Vite/Svelte build breakage before we bother building an image.
+      - run: npm run build

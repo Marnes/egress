@@ -93,6 +93,8 @@ export type PropSpec = {
   nodes?: string[];
   objectId?: string;
   interactive?: boolean;
+  /** Block the player's floor-plane movement using this prop's world bounds. */
+  collidable?: boolean;
   /**
    * Client-side surface this prop opens when clicked, instead of (or as well
    * as) sending an action to the server.

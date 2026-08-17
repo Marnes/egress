@@ -25,6 +25,7 @@ export const pumpRoomVisual: RoomVisual = {
       id: 'plinth',
       type: 'box',
       transform: { position: [-2.4, 0.15, 1.4] },
+      collidable: true,
       materials: { body: 'structure' },
       params: { w: 0.9, h: 0.3, d: 0.7 }
     },
@@ -53,6 +54,7 @@ export const pumpRoomVisual: RoomVisual = {
       id: 'pump_unit',
       type: 'pump',
       transform: { position: [-2.4, 0.3, 1.4], rotation: [0, -0.18, 0] },
+      collidable: true,
       materials: { body: 'metal', hardware: 'metalDark' },
       params: { scale: 1, variant: 4, riseM: 0.8, runM: 0.42 }
     },
@@ -116,6 +118,7 @@ export const pumpRoomVisual: RoomVisual = {
       id: 'barrel_a',
       type: 'barrel',
       transform: { position: [2.32, 0.44, -1.52] },
+      collidable: true,
       materials: { body: 'metal', hardware: 'metalDark' },
       params: { radius: 0.29, height: 0.88, hoops: 2, variant: 1 }
     },
@@ -123,6 +126,7 @@ export const pumpRoomVisual: RoomVisual = {
       id: 'barrel_b',
       type: 'barrel',
       transform: { position: [2.34, 0.44, -0.87], rotation: [0, 0.7, 0] },
+      collidable: true,
       materials: { body: 'metal', hardware: 'metalDark' },
       params: { radius: 0.29, height: 0.88, hoops: 2, variant: 2 }
     },
@@ -136,6 +140,7 @@ export const pumpRoomVisual: RoomVisual = {
       id: 'barrel_tipped',
       type: 'barrel',
       transform: { position: [1.42, 0.29, -1.66], rotation: [0, 0.42, 1.5708] },
+      collidable: true,
       materials: { body: 'metal', hardware: 'metalDark' },
       params: { radius: 0.29, height: 0.88, hoops: 2, variant: 3 }
     },
@@ -384,7 +389,14 @@ export const pumpRoomVisual: RoomVisual = {
       nodes: ['pipes'],
       objectId: 'pipe_c',
       materials: { bezel: 'metalDark' },
-      params: { radius: 0.075, depth: 0.03, waterJet: true, waterDropM: 1.42, waterReachM: 0.82 }
+      params: {
+        radius: 0.075,
+        depth: 0.03,
+        waterJet: true,
+        waterDropM: 1.42,
+        waterReachM: 0.82,
+        waterRadiusM: 0.056
+      }
     },
     {
       id: 'gauge_d',

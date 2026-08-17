@@ -60,9 +60,10 @@ export function createThemeRuntime(theme: Theme, surfaces?: SurfaceKit): ThemeRu
           // Standing water is the one that should catch a highlight. The
           // scene's environment is dialled right down, so the wet look has to
           // come from a broad specular rather than a mirror finish.
-          roughness: kind === 'puddle' ? 0.13 : kind === 'damp' ? 0.45 : 0.95,
+          roughness:
+            kind === 'waterSheet' ? 0.08 : kind === 'puddle' ? 0.13 : kind === 'damp' ? 0.45 : 0.95,
           metalness: 0,
-          envMapIntensity: kind === 'puddle' ? 3 : 0.1
+          envMapIntensity: kind === 'waterSheet' ? 3 : kind === 'puddle' ? 3 : 0.1
         });
         material.name = `theme:${theme.id}:decal:${kind}`;
         materials.set(key, material);

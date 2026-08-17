@@ -65,7 +65,7 @@ describe('pump-room records', () => {
     const crank = pumpRoom.records.lookup('work_orders', 'crank');
     expect(crank).toContain('spring return');
     expect(pumpRoom.records.lookup('work_orders', 'gauge c')).toBe(crank);
-    expect(pumpRoom.records.lookup('schematic', 'k-12')).toContain('thirty seconds');
+    expect(pumpRoom.records.lookup('schematic', 'k-12')).not.toMatch(/thirty|30/i);
     expect(pumpRoom.records.lookup('maintenance_log', 'bypass')).toContain('C glass');
   });
 

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { createCrtPanel, type CrtPanel, type CrtPanelOptions } from './crt.js';
+import { createPrintout, type Printout, type PrintoutOptions } from './printout.js';
 import { mulberry32 } from './procedural.js';
 
 /**
@@ -42,6 +43,8 @@ export type LegibilityKit = {
   glyphPanel(opts: GlyphPanelOptions): GlyphPanel;
   /** A lit phosphor display, as opposed to the printed labels above. */
   crtPanel(opts: CrtPanelOptions): CrtPanel;
+  /** A dot-matrix listing on continuous-form paper, holes and all. */
+  printout(opts: PrintoutOptions): Printout;
 };
 
 export type LegibilityCanvasFactory = (width: number, height: number) => HTMLCanvasElement;
@@ -136,6 +139,9 @@ export function createLegibilityKit(
     crtPanel(options) {
       return createCrtPanel(createCanvas, options);
     },
+    printout(options) {
+      return createPrintout(createCanvas, options);
+    },
     glyphPanel({ widthPx, heightPx, transparent = false }) {
       const canvas = createCanvas(widthPx, heightPx);
       canvas.width = widthPx;
@@ -175,7 +181,10 @@ export function createLegibilityKit(
           // redraws instead of crawling when the reading changes.
           const rng = mulberry32(seed);
           context.clearRect(0, 0, widthPx, heightPx);
-          if (style === 'dial' && value !== null) {
+          // A dial keeps its enamel face whether or not it has a reading to
+          // show: a gauge with its needle obscured still looks like a gauge,
+          // where filling the panel with ink reads as a hole in the pipe.
+          if (style === 'dial') {
             paintDialFace(context, widthPx, heightPx, rng);
           } else if (!transparent) {
             context.fillStyle = value === null ? INK : FACE;

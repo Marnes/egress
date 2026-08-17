@@ -277,7 +277,9 @@
     const movement = forward.multiplyScalar(forwardAmount).addScaledVector(right, rightAmount);
     if (movement.lengthSq() > 1) movement.normalize();
     movement.multiplyScalar((heldKeys.has('shift') ? 2.8 : 1.6) * dtSeconds);
-    camera.position.add(movement);
+    const nextPosition = room?.moveWithCollisions(camera.position, movement);
+    if (nextPosition) camera.position.copy(nextPosition);
+    else camera.position.add(movement);
     const [width, , depth] = visual.bounds.size;
     camera.position.x = THREE.MathUtils.clamp(camera.position.x, -width / 2 + 0.25, width / 2 - 0.25);
     camera.position.z = THREE.MathUtils.clamp(camera.position.z, -depth / 2 + 0.25, depth / 2 - 0.25);

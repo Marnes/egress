@@ -220,7 +220,7 @@
         onerror={(message) => (error = message)}
       />
     {/if}
-    <Hud {view} {agentConnected} {roomLog} {intercomLog} {error} onrestart={restart} />
+    <Hud {view} {agentConnected} {roomLog} {intercomLog} {error} onrestart={restart} onselect={choose} />
     <LinkSetup open={linkSetupOpen} {sessionId} onclose={closeLinkSetup} />
     <Intercom
       available={agentConnected}

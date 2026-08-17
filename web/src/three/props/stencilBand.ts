@@ -18,6 +18,7 @@ export const stencilBand: PropFactory = (ctx) => {
     material(ctx, 'band', 'metalDark')
   );
   const face = new THREE.Mesh(new THREE.PlaneGeometry(width, height), panelMaterial(ctx, panel));
+  face.name = `${ctx.spec.id}:face`;
   band.rotation.y = Math.PI;
   face.rotation.y = Math.PI;
   face.position.z = -0.001;

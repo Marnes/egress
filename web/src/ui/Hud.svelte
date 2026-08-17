@@ -8,7 +8,8 @@
     roomLog,
     intercomLog,
     error,
-    onrestart
+    onrestart,
+    onselect
   }: {
     view: PlayerView;
     agentConnected: boolean;
@@ -16,10 +17,19 @@
     intercomLog: IntercomLine[];
     error: string | null;
     onrestart(): void | Promise<void>;
+    onselect(choiceId: string, optionId: string): void | Promise<void>;
   } = $props();
 
   let menu: HTMLDetailsElement;
   let intercomFeed = $state.raw<HTMLElement>();
+  let submittingChoice = $state<string>();
+  const pendingChoice = $derived.by(() => {
+    for (let index = intercomLog.length - 1; index >= 0; index -= 1) {
+      const choice = intercomLog[index].choice;
+      if (choice?.selectedOptionId === null) return choice;
+    }
+    return undefined;
+  });
 
   $effect(() => {
     const hasMessages = intercomLog.length > 0;
@@ -35,6 +45,16 @@
     if (!confirmed) return;
     menu.open = false;
     await onrestart();
+  }
+
+  async function select(choiceId: string, optionId: string): Promise<void> {
+    if (submittingChoice) return;
+    submittingChoice = choiceId;
+    try {
+      await onselect(choiceId, optionId);
+    } finally {
+      submittingChoice = undefined;
+    }
   }
 </script>
 
@@ -79,6 +99,19 @@
           </li>
         {/each}
       </ol>
+      {#if pendingChoice}
+        <div class="feed-choices" aria-label="Response options">
+          <p>Response required</p>
+          <div>
+            {#each pendingChoice.options as option (option.id)}
+              <button
+                disabled={submittingChoice === pendingChoice.id}
+                onclick={() => void select(pendingChoice.id, option.id)}
+              >{option.label}</button>
+            {/each}
+          </div>
+        </div>
+      {/if}
     </section>
   {/if}
   {#if view.complete}
@@ -237,6 +270,34 @@
   }
   .intercom-feed li.agent strong { color: #84b794; }
   .intercom-feed span { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .feed-choices {
+    border-top: 1px solid rgb(99 139 112 / 45%);
+    padding: 0.45rem 0.55rem 0.55rem;
+    background: rgb(12 20 18 / 72%);
+  }
+  .feed-choices p {
+    margin: 0 0 0.4rem;
+    color: #a9dab7;
+    font-size: 0.62rem;
+    font-weight: 800;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+  }
+  .feed-choices div { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+  .feed-choices button {
+    border: 1px solid #718078;
+    border-radius: 0.25rem;
+    padding: 0.34rem 0.65rem;
+    color: #e8ece5;
+    background: #26302d;
+    font: 700 0.68rem ui-monospace, monospace;
+    cursor: pointer;
+  }
+  .feed-choices button:hover:not(:disabled), .feed-choices button:focus-visible {
+    border-color: #c6a05e;
+    color: #ffca83;
+  }
+  .feed-choices button:disabled { cursor: wait; opacity: 0.45; }
   .complete, .error {
     width: fit-content;
     margin: 0.65rem 0 0;

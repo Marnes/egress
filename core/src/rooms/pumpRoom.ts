@@ -152,8 +152,8 @@ export const pumpRoom: RoomSpec = {
         'Keypad feed transferred to the overhead lighting tray after the 2003 flood. Under-slab ' +
         'conduit and float relay F-7 tagged abandoned in place.',
       'schematic:pump':
-        'P-3 remote starter: main contactor M and auxiliary relay K-12. K-12 holds for thirty ' +
-        'seconds and lifts the local gauge-wash bypass interlock.',
+        'P-3 remote starter: main contactor M and auxiliary relay K-12. K-12 briefly lifts the ' +
+        'local gauge-wash bypass interlock while the starter is active.',
       'schematic:sump':
         'Sump takes the pump-room floor gully. P-3 discharge rises beside the return-line gauge ' +
         'and shares its old wash-water bypass.',

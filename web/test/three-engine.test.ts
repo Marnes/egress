@@ -351,12 +351,9 @@ describe('Three room engine', () => {
     for (const id of ['stencil_c', 'gauge_c']) {
       const instance = room.props.get(id)!;
       instance.object.updateWorldMatrix(true, true);
-      let face: THREE.Mesh | undefined;
-      instance.object.traverse((object) => {
-        if (object instanceof THREE.Mesh && (object.geometry.type === 'PlaneGeometry' || object.geometry.type === 'CircleGeometry')) {
-          face = object;
-        }
-      });
+      // By name, not by picking the last plane in the tree: anything else
+      // added to the prop used to silently become "the face".
+      const face = instance.object.getObjectByName(`${id}:face`) as THREE.Mesh | undefined;
       expect(face).toBeDefined();
       const target = face!.getWorldPosition(new THREE.Vector3());
       const ray = new THREE.Raycaster(origin, target.clone().sub(origin).normalize(), 0, origin.distanceTo(target) + 0.1);
@@ -702,15 +699,48 @@ describe('room clutter', () => {
     expect(room.props.get('barrel_tipped')?.object.rotation.z).toBeCloseTo(1.5708, 4);
     const plan = room.props.get('pipe_service_plan')!.object;
     expect(plan.getObjectByName('pipe_service_plan:paper')).toBeDefined();
-    expect(plan.getObjectByName('pipe_service_plan:work-order')).toBeDefined();
-    expect(plan.getObjectByName('pipe_service_plan:pipe-left')).toBeDefined();
-    expect(plan.getObjectByName('pipe_service_plan:pipe-right')).toBeDefined();
-    expect(plan.getObjectByName('pipe_service_plan:swap-arrow-top')).toBeDefined();
-    expect(plan.getObjectByName('pipe_service_plan:swap-arrow-bottom')).toBeDefined();
+    // The form is printed into the sheet's own texture; only what somebody
+    // added afterwards in pen is geometry.
+    expect(plan.getObjectByName('pipe_service_plan:swap-down')).toBeDefined();
+    expect(plan.getObjectByName('pipe_service_plan:swap-up')).toBeDefined();
+    expect(plan.getObjectByName('pipe_service_plan:signature')).toBeDefined();
+    // buildRoom wraps each prop in a transform group, so walk to the meshes.
+    const planMeshes: THREE.Mesh[] = [];
+    plan.traverse((object) => {
+      if (object instanceof THREE.Mesh) planMeshes.push(object);
+    });
+    expect(planMeshes.length).toBeGreaterThan(4);
+    for (const mesh of planMeshes) {
+      expect(mesh.name).toMatch(/:(paper|swap-down|swap-up|signature)(-barb-[ab])?$/);
+    }
+
+    // Nothing drawn on the plan hangs off the sheet it is drawn on.
+    const paperBounds = new THREE.Box3().setFromObject(
+      plan.getObjectByName('pipe_service_plan:paper')!
+    );
+    for (const mesh of planMeshes) {
+      if (mesh.name.endsWith(':paper')) continue;
+      const ink = new THREE.Box3().setFromObject(mesh);
+      expect({ name: mesh.name, onSheet: true }).toEqual({
+        name: mesh.name,
+        onSheet:
+          ink.min.x >= paperBounds.min.x - 1e-3 &&
+          ink.max.x <= paperBounds.max.x + 1e-3 &&
+          ink.min.z >= paperBounds.min.z - 1e-3 &&
+          ink.max.z <= paperBounds.max.z + 1e-3
+      });
+    }
     const planBounds = new THREE.Box3().setFromObject(plan);
     expect(planBounds.min.y).toBeGreaterThan(0.9);
     expect(planBounds.min.z).toBeLessThan(-1.5);
     expect(planBounds.max.z).toBeGreaterThan(-0.9);
+    for (const id of ['barrel_a', 'barrel_b', 'barrel_tipped']) {
+      const center = new THREE.Box3()
+        .setFromObject(room.props.get(id)!.object)
+        .getCenter(new THREE.Vector3());
+      center.y = pumpRoomVisual.eyeHeightM;
+      expect(room.collides(center)).toBe(true);
+    }
     room.dispose();
   });
 });
@@ -793,6 +823,28 @@ describe('fittings and water', () => {
     expect(box.min.y).toBeLessThan(0.34);
     room.dispose();
   });
+
+  it('blocks the player at the pump footprint while allowing movement along its edge', () => {
+    const room = build();
+    const pumpBounds = new THREE.Box3()
+      .setFromObject(room.props.get('pump_unit')!.object)
+      .union(new THREE.Box3().setFromObject(room.props.get('plinth')!.object));
+    const center = pumpBounds.getCenter(new THREE.Vector3());
+    center.y = pumpRoomVisual.eyeHeightM;
+    expect(room.collides(center)).toBe(true);
+    expect(room.collides(new THREE.Vector3(0, pumpRoomVisual.eyeHeightM, 0))).toBe(false);
+
+    const radius = 0.22;
+    const start = new THREE.Vector3(
+      pumpBounds.max.x + radius + 0.01,
+      pumpRoomVisual.eyeHeightM,
+      center.z
+    );
+    const moved = room.moveWithCollisions(start, new THREE.Vector3(-0.1, 0, 0.1), radius);
+    expect(moved.x).toBeCloseTo(start.x, 6);
+    expect(moved.z).toBeCloseTo(start.z + 0.1, 6);
+    room.dispose();
+  });
 });
 
 describe('sump puzzle in the room', () => {
@@ -849,7 +901,13 @@ describe('sump puzzle in the room', () => {
     expect(water.userData.obscured).toBe(true);
     expect(water.getObjectByName('gauge_c:water-hole')).toBeDefined();
     expect(water.getObjectByName('gauge_c:water-jet')).toBeDefined();
+    expect(water.getObjectByName('gauge_c:water-wash')).toBeDefined();
     expect(water.getObjectByName('gauge_c:splash')).toBeDefined();
+    // Water hangs millimetres off the pipe, closer than any shadow map here
+    // can resolve, so it takes no part in shadowing.
+    water.traverse((object) => {
+      expect(object.userData.egressNoShadow).toBe(true);
+    });
     room.scene.updateMatrixWorld(true);
     const waterBounds = new THREE.Box3().setFromObject(water);
     expect(waterBounds.max.y).toBeGreaterThan(1.35);

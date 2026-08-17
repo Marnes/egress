@@ -37,7 +37,8 @@ export type SurfaceKind =
   | 'concreteWall'
   | 'rustedSteel'
   | 'darkMetal'
-  | 'paintedSteel';
+  | 'paintedSteel'
+  | 'paper';
 
 export type Surface = {
   map: THREE.Texture;
@@ -53,7 +54,7 @@ export type Surface = {
  * material — it tiles sideways but never vertically, so it is applied as a
  * band laid over the wall instead of being baked into the brick.
  */
-export type DecalKind = 'damp' | 'soot' | 'puddle';
+export type DecalKind = 'damp' | 'soot' | 'puddle' | 'waterSheet';
 
 export type Decal = {
   map: THREE.Texture;
@@ -526,6 +527,89 @@ function paintedSteel(width: number, height: number, palette: Palette): Channels
   return channels;
 }
 
+
+/* ------------------------------------------------------------------ paper */
+
+/**
+ * Aged drawing paper. Unlike the rest of these, it takes nothing from the
+ * palette: a document is not one of the room's surfaces, and its colour is a
+ * property of the paper stock rather than of the building.
+ */
+function paper(width: number, height: number): Channels {
+  const channels = createChannels(width, height);
+  const rng = mulberry32(0x9a17c3);
+  // Laid paper has a directional fibre; the long, thin period gives it a grain.
+  const fibre = fbm(width, height, 210, 34, 3, rng);
+  const tooth = fbm(width, height, 150, 150, 3, rng);
+  const mottle = fbm(width, height, 6, 6, 4, rng);
+  const damp = fbm(width, height, 3, 4, 3, rng);
+
+  const stock: Rgb = [206, 191, 152];
+  const shade: Rgb = [150, 133, 98];
+  const foxed: Rgb = [126, 92, 48];
+
+  for (let y = 0; y < height; y += 1) {
+    const vertical = y / (height - 1);
+    for (let x = 0; x < width; x += 1) {
+      const index = y * width + x;
+      const horizontal = x / (width - 1);
+
+      // Handling grime: paper darkens at the edges long before the middle.
+      const toEdge = Math.min(horizontal, 1 - horizontal, vertical, 1 - vertical);
+      const handled = 1 - smoothstep(0, 0.16, toEdge);
+
+      let rgb = mixRgb(stock, shade, clamp01((mottle[index] - 0.42) * 1.1) * 0.5);
+      rgb = mixRgb(rgb, foxed, clamp01((damp[index] - 0.62) * 2.2) * 0.32);
+      rgb = mixRgb(rgb, shade, handled * 0.42);
+      const grain = mix(0.94, 1.06, fibre[index] * 0.65 + tooth[index] * 0.35);
+      rgb = [rgb[0] * grain, rgb[1] * grain, rgb[2] * grain];
+
+      writeColor(channels, index, rgb);
+      // Tooth, not relief: paper is nearly flat, and a strong normal map on it
+      // reads as fabric.
+      channels.relief[index] = clamp01(0.5 + (tooth[index] - 0.5) * 0.35 + (fibre[index] - 0.5) * 0.2);
+      channels.rough[index] = clamp01(0.93 - handled * 0.1 + tooth[index] * 0.05);
+      channels.metal[index] = 0;
+    }
+  }
+  return channels;
+}
+
+function paperOverlay(overlay: Overlay, width: number, height: number): void {
+  const rng = mulberry32(0x4d10b);
+
+  // Folded in three and carried in a pocket: two creases, dirty along the line.
+  for (const at of [0.34, 0.68]) {
+    const y = height * at;
+    const path = wanderPath(rng, [0, y], 0, width, 9, 0.03);
+    strokePath(overlay.color, path, 'rgba(120,104,74,0.34)', 2.6);
+    strokePath(overlay.relief, path, 'rgba(255,255,255,0.5)', 2);
+    strokePath(overlay.color, path.map(([px, py]) => [px, py + 2] as [number, number]), 'rgba(238,230,205,0.3)', 1.6);
+  }
+
+  // Thumbed corners and a ring off the bottom of a mug.
+  for (let index = 0; index < 5; index += 1) {
+    smudge(
+      overlay.color,
+      mulberry32(index * 733 + 19),
+      rng() * width,
+      rng() * height,
+      width * (0.04 + rng() * 0.06),
+      'rgba(122,96,58,0.13)',
+      5
+    );
+  }
+  const ringX = width * (0.24 + rng() * 0.5);
+  const ringY = height * (0.55 + rng() * 0.3);
+  overlay.color.save();
+  overlay.color.strokeStyle = 'rgba(126,88,44,0.2)';
+  overlay.color.lineWidth = width * 0.012;
+  overlay.color.beginPath();
+  overlay.color.arc(ringX, ringY, width * 0.13, 0, Math.PI * 2);
+  overlay.color.stroke();
+  overlay.color.restore();
+}
+
 /* ------------------------------------------------------------------- kit */
 
 /** Exported so the noise passes can be inspected and tested without a canvas. */
@@ -596,6 +680,17 @@ export const SURFACE_RECIPES: Record<SurfaceKind, Recipe> = {
     normalStrength: 2.8,
     build: paintedSteel,
     overlay: scratchOverlay(0x2ff81, 20, 0.3)
+  },
+  paper: {
+    width: 384,
+    height: 512,
+    // One tile per sheet: the printout supplies the albedo over the top, and
+    // the two have to share a single set of UVs.
+    tileM: [0.5, 0.72],
+    normalScale: 0.35,
+    normalStrength: 1.1,
+    build: (width, height) => paper(width, height),
+    overlay: paperOverlay
   }
 };
 
@@ -604,9 +699,11 @@ type DecalRecipe = {
   tileM: number;
   /**
    * `band` fades from one edge and tiles sideways; `pool` is a single ragged
-   * blot that fades to nothing at every edge and does not tile at all.
+   * blot that fades to nothing at every edge and does not tile at all;
+   * `streak` is filaments running along x, tiling both ways so it can be
+   * scrolled to make water move.
    */
-  shape: 'band' | 'pool';
+  shape: 'band' | 'pool' | 'streak';
   /** Band only: which edge is opaque, 1 = the bottom, 0 = the top. */
   anchor: 0 | 1;
   seed: number;
@@ -615,6 +712,17 @@ type DecalRecipe = {
 };
 
 const DECAL_RECIPES: Record<DecalKind, DecalRecipe> = {
+  // Falling water: threads of it, with the gaps between them. Scrolled along
+  // its own length by whatever draws it.
+  waterSheet: {
+    size: 256,
+    tileM: 0.4,
+    shape: 'streak',
+    anchor: 1,
+    seed: 0x2c9f1,
+    strength: 1,
+    tint: () => [212, 231, 234]
+  },
   // Standing water: dark, ragged at the rim, and thin enough to read the slab
   // through it.
   puddle: {
@@ -651,7 +759,10 @@ const DECAL_RECIPES: Record<DecalKind, DecalRecipe> = {
 function bakeDecal(recipe: DecalRecipe, palette: Palette, factory: CanvasFactory): Decal {
   const size = recipe.size;
   const rng = mulberry32(recipe.seed);
-  const edge = fbm(size, size, 7, 3, 4, rng);
+  const edge =
+    recipe.shape === 'streak'
+      ? fbm(size, size, 12, 30, 3, rng)
+      : fbm(size, size, 7, 3, 4, rng);
   const body = fbm(size, size, 12, 12, 4, rng);
   const runs = fbm(size, size, 90, 4, 3, rng);
   const rim = fbm(size, size, 4, 4, 2, mulberry32((recipe.seed ^ 0x51f3) >>> 0));
@@ -669,7 +780,11 @@ function bakeDecal(recipe: DecalRecipe, palette: Palette, factory: CanvasFactory
     for (let x = 0; x < size; x += 1) {
       const index = y * size + x;
       let alpha: number;
-      if (recipe.shape === 'pool') {
+      if (recipe.shape === 'streak') {
+        // Filaments along x, broken up by blobs travelling with the flow.
+        const thread = smoothstep(0.44, 0.72, edge[index]);
+        alpha = thread * mix(0.45, 1, body[index]) * recipe.strength;
+      } else if (recipe.shape === 'pool') {
         // Radial falloff with a slow wandering rim: water finds a smooth
         // outline, so the noise has to be low frequency or it reads as fur.
         const dx = x / (size - 1) - 0.5;
@@ -700,7 +815,7 @@ function bakeDecal(recipe: DecalRecipe, palette: Palette, factory: CanvasFactory
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.wrapS = recipe.shape === 'pool' ? THREE.ClampToEdgeWrapping : THREE.RepeatWrapping;
-  texture.wrapT = THREE.ClampToEdgeWrapping;
+  texture.wrapT = recipe.shape === 'streak' ? THREE.RepeatWrapping : THREE.ClampToEdgeWrapping;
   texture.anisotropy = 8;
   texture.needsUpdate = true;
   return { map: texture, tileM: recipe.tileM };

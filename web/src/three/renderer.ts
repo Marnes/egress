@@ -59,11 +59,13 @@ export function createRenderer(options: RendererOptions): RendererHandle {
     // Shadow casting ignores alpha, so a translucent weathering decal would
     // throw the silhouette of a solid rectangle across the room.
     const translucent = materials.some((material) => material.transparent);
-    // A light fitting sits millimetres from its own bulb, where shadow-map
-    // resolution cannot resolve it and the fitting blacks out its own beam.
+    // Opted out of shadowing entirely: a light fitting sits millimetres from
+    // its own bulb, and a film of water sits millimetres off the pipe behind
+    // it — neither distance a shadow map can resolve, so both collect acne or
+    // black themselves out.
     const exempt = object.userData.egressNoShadow === true;
     object.castShadow = lit && !translucent && !exempt;
-    object.receiveShadow = lit;
+    object.receiveShadow = lit && !exempt;
   });
   const pmrem = new THREE.PMREMGenerator(renderer);
   const environmentScene = new RoomEnvironment();

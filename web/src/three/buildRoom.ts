@@ -36,6 +36,8 @@ export type RoomHandle = {
   props: Map<string, PropInstance>;
   readonly activeNodeId: string;
   activeHitboxes(): THREE.Object3D[];
+  collides(position: THREE.Vector3, radiusM?: number): boolean;
+  moveWithCollisions(position: THREE.Vector3, movement: THREE.Vector3, radiusM?: number): THREE.Vector3;
   setActiveNode(id: string): void;
   applyView(view: PlayerView): void;
   applyMessages(messages: readonly PropMessage[]): void;
@@ -115,6 +117,13 @@ export function buildRoom(visual: RoomVisual, theme: Theme, deps: BuildDeps = {}
   }
 
   scene.updateMatrixWorld(true);
+  const collisionBoxes = ordered.flatMap((spec) => {
+    if (!spec.collidable) return [];
+    const instance = props.get(spec.id);
+    if (!instance) return [];
+    const box = new THREE.Box3().setFromObject(instance.object);
+    return box.isEmpty() ? [] : [box];
+  });
   const nodes = resolveNodes(visual, props);
   for (const spec of ordered) {
     if (!spec.interactive) continue;
@@ -177,6 +186,29 @@ export function buildRoom(visual: RoomVisual, theme: Theme, deps: BuildDeps = {}
         }
       }
       return hitboxes;
+    },
+    collides(position, radiusM = 0.22) {
+      return collisionBoxes.some((box) => {
+        const nearestX = THREE.MathUtils.clamp(position.x, box.min.x, box.max.x);
+        const nearestZ = THREE.MathUtils.clamp(position.z, box.min.z, box.max.z);
+        const dx = position.x - nearestX;
+        const dz = position.z - nearestZ;
+        return dx * dx + dz * dz < radiusM * radiusM;
+      });
+    },
+    moveWithCollisions(position, movement, radiusM = 0.22) {
+      const result = position.clone();
+      const desired = position.clone().add(movement);
+      if (!handle.collides(desired, radiusM)) return desired;
+
+      const alongX = result.clone();
+      alongX.x = desired.x;
+      if (!handle.collides(alongX, radiusM)) result.x = desired.x;
+
+      const alongZ = result.clone();
+      alongZ.z = desired.z;
+      if (!handle.collides(alongZ, radiusM)) result.z = desired.z;
+      return result;
     },
     setActiveNode(id) {
       if (!nodes.has(id)) throw new Error(`Unknown navigation node "${id}"`);

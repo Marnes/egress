@@ -101,12 +101,30 @@ export type RaisedTextOptions = {
   tracking?: number;
 };
 
-function glyphAdvance(character: string, strokeRatio: number): number {
+type GlyphMetrics = {
+  /** Where the glyph's ink starts on the unit grid, before it is shifted. */
+  left: number;
+  /** Ink width plus one stroke, so bars meeting end to end just touch. */
+  advance: number;
+};
+
+/**
+ * Glyphs are drawn wherever the stroke table put them on the unit grid, which
+ * is not necessarily hard against its left edge — `I` is a single bar at
+ * x = 0.5. Measuring only the right extent left half a cap height of dead
+ * space in front of it, so `PIPE` set as `P IPE`. Fit each glyph to its own
+ * ink and let tracking do the spacing.
+ */
+function glyphMetrics(character: string, strokeRatio: number): GlyphMetrics {
   const strokes = GLYPHS[character];
-  if (!strokes) return SPACE_ADVANCE;
-  let extent = 0;
-  for (const [x1, , x2] of strokes) extent = Math.max(extent, x1, x2);
-  return extent + strokeRatio;
+  if (!strokes) return { left: 0, advance: SPACE_ADVANCE };
+  let left = Number.POSITIVE_INFINITY;
+  let right = Number.NEGATIVE_INFINITY;
+  for (const [x1, , x2] of strokes) {
+    left = Math.min(left, x1, x2);
+    right = Math.max(right, x1, x2);
+  }
+  return { left, advance: right - left + strokeRatio };
 }
 
 /**
@@ -120,7 +138,7 @@ export function raisedTextWidth(text: string, options: RaisedTextOptions): numbe
   const characters = [...text];
   let width = 0;
   characters.forEach((character, index) => {
-    width += glyphAdvance(character, strokeRatio) * options.capHeight;
+    width += glyphMetrics(character, strokeRatio).advance * options.capHeight;
     if (index < characters.length - 1) width += tracking * options.capHeight;
   });
   return width + strokeRatio * options.capHeight;
@@ -144,10 +162,14 @@ export function raisedTextGeometry(
   let pen = 0;
   const characters = [...text];
   characters.forEach((character, index) => {
+    const metrics = glyphMetrics(character, strokeRatio);
+    // Sit the glyph's ink hard against the pen, half a stroke in so the bar's
+    // rounded cap lands on the pen rather than overhanging it.
+    const bearing = (strokeRatio / 2 - metrics.left) * capHeight;
     for (const [x1, y1, x2, y2] of GLYPHS[character] ?? []) {
-      const ax = pen + x1 * capHeight;
+      const ax = pen + bearing + x1 * capHeight;
       const ay = y1 * capHeight;
-      const bx = pen + x2 * capHeight;
+      const bx = pen + bearing + x2 * capHeight;
       const by = y2 * capHeight;
       const run = Math.hypot(bx - ax, by - ay);
       // Overlength by one stroke so corners join without a notch.
@@ -156,7 +178,7 @@ export function raisedTextGeometry(
       bar.translate((ax + bx) / 2, (ay + by) / 2, 0);
       parts.push(bar);
     }
-    pen += glyphAdvance(character, strokeRatio) * capHeight;
+    pen += metrics.advance * capHeight;
     if (index < characters.length - 1) pen += tracking * capHeight;
   });
 

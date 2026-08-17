@@ -1,110 +1,191 @@
 import * as THREE from 'three';
-import { raisedTextGeometry } from '../text/raisedText.js';
 import type { PropFactory } from './registry.js';
 import { createInstance, numberParam } from './common.js';
+
+/** Ink sits clear of the sheet's lifted edges, which rise to ~3.5 mm. */
+const INK_Z = 0.006;
 
 function stroke(
   name: string,
   points: [number, number][],
-  material: THREE.Material,
-  radius = 0.0028
+  surface: THREE.Material,
+  radius = 0.0026
 ): THREE.Mesh {
-  const curve = new THREE.CatmullRomCurve3(points.map(([x, y]) => new THREE.Vector3(x, y, 0.003)));
-  const mesh = new THREE.Mesh(new THREE.TubeGeometry(curve, 18, radius, 5, false), material);
+  const curve = new THREE.CatmullRomCurve3(points.map(([x, y]) => new THREE.Vector3(x, y, INK_Z)));
+  const mesh = new THREE.Mesh(new THREE.TubeGeometry(curve, 20, radius, 5, false), surface);
   mesh.name = name;
   return mesh;
 }
 
-function addText(
-  root: THREE.Group,
+/** Line plus two barbs, pointing along the last segment. */
+function arrow(
   name: string,
-  text: string,
-  y: number,
-  capHeight: number,
-  material: THREE.Material
-): void {
-  const geometry = raisedTextGeometry(text, {
-    capHeight,
-    depth: 0.0008,
-    strokeRatio: 0.12,
-    tracking: 0.08
-  });
-  if (!geometry) return;
-  const mesh = new THREE.Mesh(geometry, material);
-  mesh.name = name;
-  mesh.position.set(0, y, 0.003);
-  root.add(mesh);
+  points: [number, number][],
+  surface: THREE.Material,
+  radius = 0.0026
+): THREE.Mesh[] {
+  const [tipX, tipY] = points[points.length - 1];
+  const [fromX, fromY] = points[points.length - 2];
+  const angle = Math.atan2(tipY - fromY, tipX - fromX);
+  const barb = 0.022;
+  return [
+    stroke(name, points, surface, radius),
+    stroke(
+      `${name}-barb-a`,
+      [[tipX, tipY], [tipX - Math.cos(angle - 0.45) * barb, tipY - Math.sin(angle - 0.45) * barb]],
+      surface,
+      radius
+    ),
+    stroke(
+      `${name}-barb-b`,
+      [[tipX, tipY], [tipX - Math.cos(angle + 0.45) * barb, tipY - Math.sin(angle + 0.45) * barb]],
+      surface,
+      radius
+    )
+  ];
 }
 
-/** A weathered service plan bridging the lids of the two upright drums. */
+/**
+ * The 1994 work order that swapped the return and overflow lines, left on the
+ * drum lids. It is a dot-matrix listing on continuous-form paper — the body is
+ * printed into the sheet's own texture, sprocket holes and all, and the fitter
+ * who did the job has marked the crossover on it in pen.
+ */
+const FORM: readonly string[] = [
+  'KESTREL FACILITIES ENGINEERING',
+  '==============================',
+  '',
+  'WORK ORDER . . . . . . WO-2291',
+  'RAISED . . . . . . . . 11-94',
+  'SITE . . . . . . . . . PUMP ROOM',
+  'STATUS . . . . . . . . CLOSED',
+  '',
+  '  LINE SCHEDULE',
+  '  -------------',
+  '',
+  '     |              |',
+  '     |              |',
+  '     |              |',
+  '     |              |',
+  '     |              |',
+  '     |              |',
+  '',
+  '   RETURN       OVERFLOW',
+  '',
+  'REMARKS:',
+  'LINES CROSSED AT THE MANIFOLD',
+  'DURING RECOMMISSIONING.',
+  '',
+  'SIGNED . . . . . . . . . . . .'
+];
+
+/** Character cells the pen marks hang off, indexed into FORM above. */
+const LEFT_RUN = 5;
+const RIGHT_RUN = 20;
+const RUN_TOP_LINE = 11;
+const RUN_BOTTOM_LINE = 16;
+const SIGN_LINE = 24;
+
 export const workOrderPlan: PropFactory = (ctx) => {
   const width = numberParam(ctx, 'w', 0.5);
   const height = numberParam(ctx, 'h', 0.72);
   const root = new THREE.Group();
   root.name = ctx.spec.id;
 
+  // The listing carries the colour and the holes; the paper surface is kept
+  // only for its tooth, and shares the sheet's UVs one to one.
+  const printout = ctx.legible?.printout({
+    widthPx: 768,
+    heightPx: Math.round((768 * height) / width),
+    lines: FORM,
+    columns: 34,
+    seed: Math.round(numberParam(ctx, 'seed', 0x51a7c))
+  });
+  const tooth = ctx.theme.surface('warning', 'paper');
   const paperMaterial = new THREE.MeshStandardMaterial({
-    color: '#d4c89f',
-    roughness: 0.94,
+    map: printout?.texture,
+    normalMap: tooth?.normalMap,
+    normalScale: new THREE.Vector2(tooth?.normalScale ?? 1, tooth?.normalScale ?? 1),
+    roughnessMap: tooth?.ormMap,
+    roughness: 1,
     metalness: 0,
-    side: THREE.DoubleSide
+    // Punched rather than blended: the sprocket and rot holes keep hard edges
+    // and the sheet still writes depth.
+    alphaTest: 0.5
   });
+  // Ballpoint, added by hand long after the sheet came off the printer.
   const inkMaterial = new THREE.MeshStandardMaterial({
-    color: ctx.theme.palette.ink,
-    roughness: 0.9,
-    metalness: 0
-  });
-  const stampMaterial = new THREE.MeshStandardMaterial({
-    color: ctx.theme.palette.warning,
-    roughness: 0.92,
+    color: '#1e2740',
+    roughness: 0.86,
     metalness: 0
   });
 
-  const paperGeometry = new THREE.PlaneGeometry(width, height, 8, 10);
+  const paperGeometry = new THREE.PlaneGeometry(width, height, 10, 14);
   const positions = paperGeometry.attributes.position;
   for (let index = 0; index < positions.count; index += 1) {
     const x = positions.getX(index);
     const y = positions.getY(index);
-    const curl = Math.sin((x / width + 0.5) * Math.PI * 3) * 0.0012;
-    const edgeLift = Math.pow(Math.abs(y) / (height / 2), 5) * 0.0024;
-    positions.setZ(index, curl + edgeLift);
+    // Folded in three and flattened out again: two ridges across the sheet,
+    // plus corners that will not lie down.
+    const folds = Math.cos((y / height) * Math.PI * 3) * 0.0016;
+    const edgeLift = Math.abs(y / (height / 2)) ** 5 * 0.0022 + Math.abs(x / (width / 2)) ** 6 * 0.0018;
+    positions.setZ(index, folds + edgeLift);
   }
   paperGeometry.computeVertexNormals();
   const paper = new THREE.Mesh(paperGeometry, paperMaterial);
   paper.name = `${ctx.spec.id}:paper`;
   root.add(paper);
 
-  addText(root, `${ctx.spec.id}:title`, 'PIPE SERVICE PLAN', height * 0.39, 0.024, inkMaterial);
-  addText(root, `${ctx.spec.id}:work-order`, '1994 / WO-2291', height * 0.3, 0.03, stampMaterial);
-  root.add(stroke(`${ctx.spec.id}:rule`, [[-width * 0.4, height * 0.245], [width * 0.4, height * 0.245]], inkMaterial, 0.0016));
+  // Pen marks are placed on the print by character cell, so they stay on the
+  // right rows whatever the form says.
+  const at = (column: number, line: number): [number, number] => {
+    const spot = printout?.anchor(column, line) ?? { u: 0.5, v: 0.5 };
+    return [(spot.u - 0.5) * width, (0.5 - spot.v) * height];
+  };
+  const [leftX] = at(LEFT_RUN, 0);
+  const [rightX] = at(RIGHT_RUN, 0);
+  const [, topY] = at(0, RUN_TOP_LINE);
+  const [, bottomY] = at(0, RUN_BOTTOM_LINE);
 
-  // Two imperfect pipe runs, drawn as if with a maintenance pencil.
+  // Crossing arrows over the two printed runs: a swap reads at a glance as an
+  // X, where two facing curves read as an eye.
+  const midY = (topY + bottomY) / 2;
+  const reach = (topY - bottomY) * 0.34;
   root.add(
-    stroke(
-      `${ctx.spec.id}:pipe-left`,
-      [[-0.13, 0.1], [-0.135, 0.02], [-0.126, -0.09], [-0.132, -0.23]],
-      inkMaterial,
-      0.004
+    ...arrow(
+      `${ctx.spec.id}:swap-down`,
+      [[leftX, midY + reach], [0, midY + reach * 0.12], [rightX, midY - reach]],
+      inkMaterial
     ),
-    stroke(
-      `${ctx.spec.id}:pipe-right`,
-      [[0.13, 0.1], [0.126, 0.01], [0.136, -0.1], [0.13, -0.23]],
-      inkMaterial,
-      0.004
+    ...arrow(
+      `${ctx.spec.id}:swap-up`,
+      [[rightX, midY + reach], [0, midY + reach * 0.12], [leftX, midY - reach]],
+      inkMaterial
     )
   );
 
-  // Opposing curved arrows make the return/overflow swap readable without prose.
+  // Signed along the printed dotted rule at the foot of the form.
+  const [signX, signY] = at(9, SIGN_LINE);
+  const run = width * 0.42;
   root.add(
-    stroke(`${ctx.spec.id}:swap-arrow-top`, [[-0.1, 0.06], [0, 0.13], [0.1, 0.06]], stampMaterial),
-    stroke(`${ctx.spec.id}:swap-arrow-top-a`, [[0.1, 0.06], [0.069, 0.083]], stampMaterial),
-    stroke(`${ctx.spec.id}:swap-arrow-top-b`, [[0.1, 0.06], [0.074, 0.031]], stampMaterial),
-    stroke(`${ctx.spec.id}:swap-arrow-bottom`, [[0.1, -0.1], [0, -0.17], [-0.1, -0.1]], stampMaterial),
-    stroke(`${ctx.spec.id}:swap-arrow-bottom-a`, [[-0.1, -0.1], [-0.069, -0.077]], stampMaterial),
-    stroke(`${ctx.spec.id}:swap-arrow-bottom-b`, [[-0.1, -0.1], [-0.074, -0.129]], stampMaterial)
+    // A signature, not a sine wave: a tall initial, a slump through the middle,
+    // and a tail that runs past the end of the rule.
+    stroke(
+      `${ctx.spec.id}:signature`,
+      [
+        [signX, signY - 0.004],
+        [signX + run * 0.08, signY + 0.017],
+        [signX + run * 0.18, signY - 0.003],
+        [signX + run * 0.3, signY + 0.008],
+        [signX + run * 0.45, signY - 0.005],
+        [signX + run * 0.62, signY + 0.006],
+        [signX + run * 0.82, signY - 0.002],
+        [signX + run, signY - 0.007]
+      ],
+      inkMaterial,
+      0.0017
+    )
   );
-  addText(root, `${ctx.spec.id}:return-label`, 'RETURN', -height * 0.4, 0.018, inkMaterial);
-  addText(root, `${ctx.spec.id}:overflow-label`, 'OVERFLOW', -height * 0.455, 0.015, inkMaterial);
 
   const instance = createInstance(root, []);
   return {
@@ -112,7 +193,7 @@ export const workOrderPlan: PropFactory = (ctx) => {
     dispose() {
       paperMaterial.dispose();
       inkMaterial.dispose();
-      stampMaterial.dispose();
+      printout?.dispose();
       instance.dispose();
     }
   };

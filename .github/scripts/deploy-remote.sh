@@ -13,8 +13,18 @@ set -euo pipefail
 
 cd /opt/egress
 
+# Authenticate in a THROWAWAY docker config dir. /root/.docker/config.json is
+# shared with isitadeal, hyranx and opensite, whose images are private and which
+# rely on the box staying logged in to ghcr.io -- an earlier version of this
+# script logged in there and then ran `docker logout` on exit, which silently
+# wiped their credentials too. Scoping the login here means egress can never
+# affect another stack's ability to pull, and no egress credential outlives the
+# deploy.
+DOCKER_CONFIG="$(mktemp -d)"
+export DOCKER_CONFIG
+trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+
 printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
-trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
 
 # Consumed by docker-compose.prod.yml to pin the exact image built for this commit.
 export EGRESS_IMAGE_TAG="$IMAGE_TAG"

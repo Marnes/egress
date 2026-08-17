@@ -69,21 +69,33 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # The VPS is reached over Tailscale, not its public IP. Some GitHub runner
+      # IPs cannot reach the box on :22 at all -- the packets never arrive at
+      # sshd, so it is filtering upstream of the host and nothing configured on
+      # the server can fix it. WireGuard sidesteps that path entirely.
+      #
+      # The runner joins as an ephemeral, tagged node and drops off the tailnet
+      # when the job ends.
+      - name: Connect to tailnet
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
       - name: Configure SSH
         run: |
           install -m 700 -d ~/.ssh
           printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
+          # Pinned to the box's real host key under its tailnet name, so this
+          # still verifies the host rather than trusting the network.
           printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
-      # Everything happens over ONE ssh connection. Some GitHub runner IPs
-      # intermittently cannot reach this VPS on port 22 -- the packets never
-      # arrive at sshd, so it is upstream filtering rather than anything on the
-      # host. Fewer connections means less to go wrong, and we retry on top.
-      #
-      # Secrets travel on stdin, never as arguments, so they cannot be read out
-      # of `ps` on a box that also runs other people's services.
+      # Everything happens over ONE ssh connection, and secrets travel on stdin
+      # rather than as arguments, so they cannot be read out of `ps` on a box
+      # that also runs other people's services.
       - name: Deploy
         env:
           SSH_TARGET: ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}
@@ -126,7 +138,8 @@ jobs:
             fi
           done
 
-          echo "::error::Could not reach the VPS after 3 attempts. If this is the" \
-               "connection timing out rather than the deploy failing, re-run the job" \
-               "-- it lands on a different runner IP. See DEPLOY.md."
+          echo "::error::Deploy failed after 3 attempts. Traffic goes over the" \
+               "tailnet, so a connection timeout here means the box dropped off" \
+               "Tailscale rather than the old public-IP filtering. Check" \
+               "'tailscale status' on the box. See DEPLOY.md."
           exit 1

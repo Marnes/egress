@@ -18,14 +18,31 @@ push to main
    ├─ build     docker build on a GitHub runner
    │            └─ push ghcr.io/marnes/egress:{sha-<12>, latest}
    │
-   └─ deploy    one ssh connection, retried up to 3×, carrying:
-                  the compose file + .github/scripts/deploy-remote.sh
+   └─ deploy    runner joins the tailnet, then ONE ssh connection,
+                retried up to 3×, carrying the compose file +
+                .github/scripts/deploy-remote.sh
                 which then: pull → up -d → wait for healthy → prune
 ```
+
+**The runner reaches the box over Tailscale, not its public IP.** The provider
+filters a rotating subset of GitHub's runner IPs — packets never reach `sshd`,
+so it was never fail2ban (not installed) and no server-side config could fix it.
+Roughly half of all deploy attempts ever made over the public IP failed. The
+runner now joins the tailnet as an ephemeral node tagged `tag:ci` and drops off
+when the job ends. `known_hosts` is pinned to the box's real host key under its
+tailnet name, so the host is still verified rather than trusted on first use.
+
+All four of this box's stacks (egress, isitadeal, hyranx, opensite) now deploy
+this way and share one Tailscale OAuth client.
 
 The whole remote side is `.github/scripts/deploy-remote.sh`, piped in over
 stdin rather than run as SSH arguments — that keeps the registry token out of
 `ps` on a box that runs other people's services.
+
+It also logs in to GHCR under a throwaway `DOCKER_CONFIG`. `/root/.docker/
+config.json` is shared with the other three stacks, whose images are private; an
+earlier version logged in there and ran `docker logout` on exit, which silently
+wiped their credentials too. Never reintroduce a global `docker logout` here.
 
 The image is built **on GitHub's runners, not on the VPS**. That box has ~3.8GB
 of RAM shared with several other production stacks (`isitadeal`, `hyranx`,
@@ -122,10 +139,16 @@ Repository secrets used by `.github/workflows/deploy.yml`:
 
 | Secret | Purpose |
 | --- | --- |
+| `TS_OAUTH_CLIENT_ID` | Tailscale OAuth client, scoped to `tag:ci` |
+| `TS_OAUTH_SECRET` | Its secret. Unlike an auth key, this does not expire |
 | `DEPLOY_SSH_KEY` | Private half of a **CI-only** ed25519 key |
-| `DEPLOY_KNOWN_HOSTS` | Server host keys, so CI verifies the host instead of blindly trusting it |
-| `DEPLOY_HOST` | `102.202.192.133` |
+| `DEPLOY_KNOWN_HOSTS` | The box's host key under its tailnet name, so CI verifies the host instead of blindly trusting it |
+| `DEPLOY_HOST` | `absolute-vps` — the **tailnet** name, not the public IP |
 | `DEPLOY_USER` | `root` |
+
+The Tailscale OAuth pair is shared across all four repos. `tag:ci` must be
+listed in `tagOwners` in the [ACL policy](https://login.tailscale.com/admin/acls/file)
+or Tailscale refuses to mint keys for it.
 
 `GITHUB_TOKEN` is provided automatically and covers both the GHCR push and the
 server-side pull; no long-lived registry credential is stored on the VPS.
@@ -185,27 +208,26 @@ Caddy is fine if the other sites still resolve.
 `/opt/infra/Caddyfile` doing its job. You hit the origin directly instead of
 going through Cloudflare. Use the real hostname.
 
-**Deploy fails with `Connection timed out`** — this is known and intermittent.
-Some GitHub runner IPs cannot reach this VPS on port 22; the packets never
-arrive at `sshd` (nothing shows up in `/var/log/auth.log`), so it is filtering
-somewhere upstream of the host, not a server misconfiguration. UFW allows
-OpenSSH from anywhere and there is no fail2ban.
-
-The deploy retries 3× with backoff. If all three fail, **just re-run the job** —
-it gets scheduled on a different runner with a different IP, which is usually
-enough:
+**Deploy fails with `Connection timed out`** — traffic goes over the tailnet
+now, so this means the box fell off Tailscale, not the old public-IP filtering:
 
 ```bash
-gh run rerun <run-id> --repo Marnes/egress --failed
+ssh -i ~/.ssh/absolute_vps root@102.202.192.133 'tailscale status; systemctl status tailscaled'
 ```
 
 Nothing is left half-applied when this happens: the connection fails before any
 container is touched, and the running version keeps serving. The remote script
 is idempotent, so a retry after a partial run is safe.
 
-If it ever becomes constant rather than occasional, the durable fix is to invert
-the direction — have the server poll GHCR for a new image on a timer, so no
-inbound SSH is needed at all.
+**Deploy fails at the "Connect to tailnet" step** — the OAuth client was revoked
+or `tag:ci` was removed from `tagOwners`. Check the
+[OAuth clients page](https://login.tailscale.com/admin/settings/oauth).
+
+**Historical note:** before Tailscale, deploys ran over the public IP and about
+half of all attempts timed out, because the provider filters a rotating subset
+of GitHub's runner IPs. If you ever see that again, do not chase fail2ban — it
+is not installed, and UFW allows OpenSSH from anywhere. The packets simply never
+arrive.
 
 **Deploy fails with `Permission denied (publickey)`** — that is a real auth
 problem, not the above. Confirm the key is still installed:
@@ -229,6 +251,25 @@ ssh -i ~/.ssh/absolute_vps root@102.202.192.133 \
 ```
 
 ---
+
+## The other stacks on this box
+
+All four deploy from GitHub Actions over the same tailnet, with the same
+`tag:ci` OAuth client and the same pinned `known_hosts`. Each has its own
+CI-only SSH key, so any one can be revoked without touching the others.
+
+| Stack | Repo | Trigger | Remote script |
+| --- | --- | --- | --- |
+| egress | `Marnes/egress` | push to `main` | `.github/scripts/deploy-remote.sh` |
+| isitadeal | `Marnes/isitadeal` | `workflow_dispatch` | `/opt/isitadeal/redeploy.sh` |
+| opensite | `Marnes/opensite` | `workflow_dispatch` | `/opt/opensite/core/redeploy.sh` |
+| hyranx | `Marnes/elomusk` | `workflow_dispatch` | `/opt/hyranx/redeploy.sh` |
+
+The other three are dispatch-only by design: their images are built by separate
+workflows on push, and a deploy just rolls the box onto whatever `:latest`
+points at — so let those builds go green first. They also expect a registry
+token now (falling back to `GITHUB_TOKEN`) rather than relying on the box
+staying logged in to ghcr.io.
 
 ## Shared-host rules
 

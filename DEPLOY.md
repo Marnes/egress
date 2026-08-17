@@ -18,11 +18,14 @@ push to main
    ├─ build     docker build on a GitHub runner
    │            └─ push ghcr.io/marnes/egress:{sha-<12>, latest}
    │
-   └─ deploy    scp docker-compose.prod.yml → /opt/egress/
-                ssh → docker compose pull && up -d
-                ssh → wait for HEALTHCHECK to report healthy
-                ssh → remove superseded egress images
+   └─ deploy    one ssh connection, retried up to 3×, carrying:
+                  the compose file + .github/scripts/deploy-remote.sh
+                which then: pull → up -d → wait for healthy → prune
 ```
+
+The whole remote side is `.github/scripts/deploy-remote.sh`, piped in over
+stdin rather than run as SSH arguments — that keeps the registry token out of
+`ps` on a box that runs other people's services.
 
 The image is built **on GitHub's runners, not on the VPS**. That box has ~3.8GB
 of RAM shared with several other production stacks (`isitadeal`, `hyranx`,
@@ -182,7 +185,30 @@ Caddy is fine if the other sites still resolve.
 `/opt/infra/Caddyfile` doing its job. You hit the origin directly instead of
 going through Cloudflare. Use the real hostname.
 
-**Deploy job can't connect** — confirm the key still works:
+**Deploy fails with `Connection timed out`** — this is known and intermittent.
+Some GitHub runner IPs cannot reach this VPS on port 22; the packets never
+arrive at `sshd` (nothing shows up in `/var/log/auth.log`), so it is filtering
+somewhere upstream of the host, not a server misconfiguration. UFW allows
+OpenSSH from anywhere and there is no fail2ban.
+
+The deploy retries 3× with backoff. If all three fail, **just re-run the job** —
+it gets scheduled on a different runner with a different IP, which is usually
+enough:
+
+```bash
+gh run rerun <run-id> --repo Marnes/egress --failed
+```
+
+Nothing is left half-applied when this happens: the connection fails before any
+container is touched, and the running version keeps serving. The remote script
+is idempotent, so a retry after a partial run is safe.
+
+If it ever becomes constant rather than occasional, the durable fix is to invert
+the direction — have the server poll GHCR for a new image on a timer, so no
+inbound SSH is needed at all.
+
+**Deploy fails with `Permission denied (publickey)`** — that is a real auth
+problem, not the above. Confirm the key is still installed:
 
 ```bash
 ssh -i ~/.ssh/absolute_vps root@102.202.192.133 \

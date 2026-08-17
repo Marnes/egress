@@ -77,76 +77,56 @@ jobs:
           printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
-      # Under this scheme the server needs no source checkout -- the compose
-      # file is the only thing it wants from the repo, so we ship it each time.
-      - name: Upload compose file
+      # Everything happens over ONE ssh connection. Some GitHub runner IPs
+      # intermittently cannot reach this VPS on port 22 -- the packets never
+      # arrive at sshd, so it is upstream filtering rather than anything on the
+      # host. Fewer connections means less to go wrong, and we retry on top.
+      #
+      # Secrets travel on stdin, never as arguments, so they cannot be read out
+      # of `ps` on a box that also runs other people's services.
+      - name: Deploy
+        env:
+          SSH_TARGET: ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_TAG: ${{ needs.build.outputs.tag }}
         run: |
-          scp -i ~/.ssh/id_ed25519 docker-compose.prod.yml \
-            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/opt/egress/docker-compose.prod.yml"
-
-      - name: Pull and restart
-        run: |
-          # Secrets go over stdin (heredoc), never on the remote command line,
-          # so they can't be read out of `ps` on a shared box.
-          ssh -i ~/.ssh/id_ed25519 \
-            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" 'bash -s' <<'EOF'
           set -euo pipefail
 
-          cd /opt/egress
+          # Build the remote payload: env exports, then the compose file, then
+          # the deploy script itself.
+          {
+            printf 'export GHCR_USER=%q\n' "$GHCR_USER"
+            printf 'export GHCR_TOKEN=%q\n' "$GHCR_TOKEN"
+            printf 'export IMAGE_TAG=%q\n' "$IMAGE_TAG"
+            printf 'mkdir -p /opt/egress\n'
+            printf "cat > /opt/egress/docker-compose.prod.yml <<'COMPOSE_EOF'\n"
+            cat docker-compose.prod.yml
+            printf 'COMPOSE_EOF\n'
+            cat .github/scripts/deploy-remote.sh
+          } > "$RUNNER_TEMP/remote.sh"
 
-          # Works whether or not the GHCR package is public.
-          printf '%s' '${{ secrets.GITHUB_TOKEN }}' \
-            | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+          # ConnectTimeout keeps an unreachable runner from burning 2+ minutes
+          # per attempt on the default TCP timeout.
+          ssh_opts=(
+            -i "$HOME/.ssh/id_ed25519"
+            -o BatchMode=yes
+            -o ConnectTimeout=20
+            -o ServerAliveInterval=15
+            -o ServerAliveCountMax=4
+          )
 
-          export EGRESS_IMAGE_TAG='${{ needs.build.outputs.tag }}'
-
-          # -p egress keeps the existing project name, which is what binds the
-          # container to the egress_egress_data volume holding the SQLite DB.
-          docker compose -p egress -f docker-compose.prod.yml pull
-          docker compose -p egress -f docker-compose.prod.yml up -d --remove-orphans
-
-          docker logout ghcr.io
-          EOF
-
-      - name: Verify health
-        run: |
-          ssh -i ~/.ssh/id_ed25519 \
-            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" 'bash -s' <<'EOF'
-          set -euo pipefail
-
-          # Compose reports healthy off the Dockerfile HEALTHCHECK; give it a
-          # window to go green before calling the deploy good.
-          for i in $(seq 1 30); do
-            status="$(docker inspect --format '{{.State.Health.Status}}' egress-egress-1 2>/dev/null || echo missing)"
-            echo "attempt $i: $status"
-            if [ "$status" = "healthy" ]; then
-              echo "Deploy healthy."
+          for attempt in 1 2 3; do
+            if ssh "${ssh_opts[@]}" "$SSH_TARGET" 'bash -s' < "$RUNNER_TEMP/remote.sh"; then
               exit 0
             fi
-            sleep 5
+            if [ "$attempt" -lt 3 ]; then
+              echo "::warning::Deploy attempt $attempt failed; retrying in $((attempt * 30))s"
+              sleep $((attempt * 30))
+            fi
           done
 
-          echo "Container did not become healthy in time. Recent logs:"
-          docker logs --tail 50 egress-egress-1 || true
+          echo "::error::Could not reach the VPS after 3 attempts. If this is the" \
+               "connection timing out rather than the deploy failing, re-run the job" \
+               "-- it lands on a different runner IP. See DEPLOY.md."
           exit 1
-          EOF
-
-      - name: Prune superseded egress images
-        # Only ever touches this project's own images -- other stacks on the
-        # box (isitadeal, hyranx, opensite, infra) must not be affected.
-        if: always()
-        run: |
-          ssh -i ~/.ssh/id_ed25519 \
-            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" 'bash -s' <<'EOF'
-          set -euo pipefail
-          # --no-trunc so the ID format matches .Image ("sha256:..."), otherwise
-          # the comparison never hits and we'd try to remove the live image.
-          keep="$(docker inspect --format '{{.Image}}' egress-egress-1 2>/dev/null || true)"
-          docker images --no-trunc --format '{{.ID}} {{.Repository}}:{{.Tag}}' \
-            | awk '$2 ~ /^ghcr\.io\/marnes\/egress:/ {print $1" "$2}' \
-            | while read -r id ref; do
-                [ "$id" = "$keep" ] && continue
-                docker rmi "$ref" >/dev/null 2>&1 || true
-              done
-          echo "Pruned old egress images (other projects untouched)."
-          EOF

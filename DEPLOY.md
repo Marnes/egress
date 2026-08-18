@@ -265,6 +265,9 @@ CI-only SSH key, so any one can be revoked without touching the others.
 | opensite | `Marnes/opensite` | `workflow_dispatch` | `/opt/opensite/core/redeploy.sh` |
 | hyranx | `Marnes/elomusk` | `workflow_dispatch` | `/opt/hyranx/redeploy.sh` |
 
+Each of the other three has its own `DEPLOY.md` in its repo with the
+stack-specific details (containers, image vars, rollback, gotchas).
+
 The other three are dispatch-only by design: their images are built by separate
 workflows on push, and a deploy just rolls the box onto whatever `:latest`
 points at — so let those builds go green first. They also expect a registry
